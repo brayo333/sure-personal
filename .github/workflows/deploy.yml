@@ -4,24 +4,25 @@ on:
   push:
     branches: ["personal"]
 
-deploy:
-    runs-on: ["self-hosted"]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+jobs:
+  deploy:
+      runs-on: ["self-hosted"]
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
 
-      - name: Set environment
-        run: |
-          cd /var/www/sure-personal
-          # Ensure we are on personal branch and up-to-date
-          git fetch origin
-          git checkout personal
-          git reset --hard origin/personal
-          git pull origin personal
+        - name: Set environment
+          run: |
+            cd /var/www/sure-personal
+            # Ensure we are on personal branch and up-to-date
+            git fetch origin
+            git checkout personal
+            git reset --hard origin/personal
+            git pull origin personal
 
-      - name: Zero-downtime Docker deploy
-        run: |
-          cd /var/www/sure-personal
-          PROJECT_NAME=sure-personal
-          docker compose -p $PROJECT_NAME pull
-          docker compose -p $PROJECT_NAME up -d --build
+        - name: Zero-downtime Docker deploy
+          run: |
+            cd /var/www/sure-personal
+            PROJECT_NAME=sure-personal
+            docker compose -p $PROJECT_NAME pull
+            docker compose -p $PROJECT_NAME up -d --build
