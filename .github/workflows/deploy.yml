@@ -11,10 +11,6 @@ jobs:
         - name: Checkout code
           uses: actions/checkout@v4
 
-        - name: Check
-          run: |
-            whoami
-
         - name: Set environment
           run: |
             cd /var/www/sure-personal
