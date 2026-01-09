@@ -11,8 +11,9 @@ jobs:
         - name: Checkout code
           uses: actions/checkout@v4
 
-        - name: Cehck
-          whoami
+        - name: Check
+          run: |
+            whoami
 
         - name: Set environment
           run: |
