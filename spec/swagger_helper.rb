@@ -15,7 +15,7 @@ RSpec.configure do |config|
       },
       servers: [
         {
-          url: 'https://api.sure.app',
+          url: 'https://app.sure.am',
           description: 'Production'
         },
         {
@@ -25,10 +25,11 @@ RSpec.configure do |config|
       ],
       components: {
         securitySchemes: {
-          bearerAuth: {
-            type: :http,
-            scheme: :bearer,
-            bearerFormat: :JWT
+          apiKeyAuth: {
+            type: :apiKey,
+            name: 'X-Api-Key',
+            in: :header,
+            description: 'API key for authentication. Generate one from your account settings.'
           }
         },
         schemas: {
@@ -54,6 +55,12 @@ RSpec.configure do |config|
                   { type: :object }
                 ],
                 nullable: true
+              },
+              errors: {
+                type: :array,
+                items: { type: :string },
+                nullable: true,
+                description: 'Validation error messages (alternative to details used by trades, valuations, etc.)'
               }
             }
           },
@@ -171,13 +178,35 @@ RSpec.configure do |config|
               account_type: { type: :string }
             }
           },
-          Category: {
+          AccountDetail: {
             type: :object,
-            required: %w[id name classification color icon],
+            required: %w[id name balance currency classification account_type],
             properties: {
               id: { type: :string, format: :uuid },
               name: { type: :string },
+              balance: { type: :string },
+              currency: { type: :string },
               classification: { type: :string },
+              account_type: { type: :string }
+            }
+          },
+          AccountCollection: {
+            type: :object,
+            required: %w[accounts pagination],
+            properties: {
+              accounts: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/AccountDetail' }
+              },
+              pagination: { '$ref' => '#/components/schemas/Pagination' }
+            }
+          },
+          Category: {
+            type: :object,
+            required: %w[id name color icon],
+            properties: {
+              id: { type: :string, format: :uuid },
+              name: { type: :string },
               color: { type: :string },
               icon: { type: :string }
             }
@@ -192,11 +221,10 @@ RSpec.configure do |config|
           },
           CategoryDetail: {
             type: :object,
-            required: %w[id name classification color icon subcategories_count created_at updated_at],
+            required: %w[id name color icon subcategories_count created_at updated_at],
             properties: {
               id: { type: :string, format: :uuid },
               name: { type: :string },
-              classification: { type: :string, enum: %w[income expense] },
               color: { type: :string },
               icon: { type: :string },
               parent: { '$ref' => '#/components/schemas/CategoryParent', nullable: true },
@@ -224,6 +252,17 @@ RSpec.configure do |config|
               name: { type: :string }
             }
           },
+          MerchantDetail: {
+            type: :object,
+            required: %w[id name type created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              name: { type: :string },
+              type: { type: :string, enum: %w[FamilyMerchant ProviderMerchant] },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' }
+            }
+          },
           Tag: {
             type: :object,
             required: %w[id name color],
@@ -232,6 +271,21 @@ RSpec.configure do |config|
               name: { type: :string },
               color: { type: :string }
             }
+          },
+          TagDetail: {
+            type: :object,
+            required: %w[id name color created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              name: { type: :string },
+              color: { type: :string },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' }
+            }
+          },
+          TagCollection: {
+            type: :array,
+            items: { '$ref' => '#/components/schemas/TagDetail' }
           },
           Transfer: {
             type: :object,
@@ -277,7 +331,211 @@ RSpec.configure do |config|
               pagination: { '$ref' => '#/components/schemas/Pagination' }
             }
           },
+          Valuation: {
+            type: :object,
+            required: %w[id date amount currency kind account created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              date: { type: :string, format: :date },
+              amount: { type: :string },
+              currency: { type: :string },
+              notes: { type: :string, nullable: true },
+              kind: { type: :string },
+              account: { '$ref' => '#/components/schemas/Account' },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' }
+            }
+          },
           DeleteResponse: {
+            type: :object,
+            required: %w[message],
+            properties: {
+              message: { type: :string }
+            }
+          },
+          ImportConfiguration: {
+            type: :object,
+            properties: {
+              date_col_label: { type: :string, nullable: true },
+              amount_col_label: { type: :string, nullable: true },
+              name_col_label: { type: :string, nullable: true },
+              category_col_label: { type: :string, nullable: true },
+              tags_col_label: { type: :string, nullable: true },
+              notes_col_label: { type: :string, nullable: true },
+              account_col_label: { type: :string, nullable: true },
+              date_format: { type: :string, nullable: true },
+              number_format: { type: :string, nullable: true },
+              signage_convention: { type: :string, nullable: true }
+            }
+          },
+          ImportStats: {
+            type: :object,
+            properties: {
+              rows_count: { type: :integer, minimum: 0 },
+              valid_rows_count: { type: :integer, minimum: 0, nullable: true }
+            }
+          },
+          ImportSummary: {
+            type: :object,
+            required: %w[id type status created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              type: { type: :string, enum: %w[TransactionImport TradeImport AccountImport MintImport CategoryImport RuleImport] },
+              status: { type: :string, enum: %w[pending complete importing reverting revert_failed failed] },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' },
+              account_id: { type: :string, format: :uuid, nullable: true },
+              rows_count: { type: :integer, minimum: 0 },
+              error: { type: :string, nullable: true }
+            }
+          },
+          ImportDetail: {
+            type: :object,
+            required: %w[id type status created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              type: { type: :string, enum: %w[TransactionImport TradeImport AccountImport MintImport CategoryImport RuleImport] },
+              status: { type: :string, enum: %w[pending complete importing reverting revert_failed failed] },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' },
+              account_id: { type: :string, format: :uuid, nullable: true },
+              error: { type: :string, nullable: true },
+              configuration: { '$ref' => '#/components/schemas/ImportConfiguration' },
+              stats: { '$ref' => '#/components/schemas/ImportStats' }
+            }
+          },
+          ImportCollection: {
+            type: :object,
+            required: %w[data meta],
+            properties: {
+              data: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/ImportSummary' }
+              },
+              meta: {
+                type: :object,
+                required: %w[current_page total_pages total_count per_page],
+                properties: {
+                  current_page: { type: :integer, minimum: 1 },
+                  next_page: { type: :integer, nullable: true },
+                  prev_page: { type: :integer, nullable: true },
+                  total_pages: { type: :integer, minimum: 0 },
+                  total_count: { type: :integer, minimum: 0 },
+                  per_page: { type: :integer, minimum: 1 }
+                }
+              }
+            }
+          },
+          ImportResponse: {
+            type: :object,
+            required: %w[data],
+            properties: {
+              data: { '$ref' => '#/components/schemas/ImportDetail' }
+            }
+          },
+          Trade: {
+            type: :object,
+            required: %w[id date amount currency name qty price account created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              date: { type: :string, format: :date },
+              amount: { type: :string },
+              currency: { type: :string },
+              name: { type: :string },
+              notes: { type: :string, nullable: true },
+              qty: { type: :string },
+              price: { type: :string },
+              investment_activity_label: { type: :string, nullable: true },
+              account: { '$ref' => '#/components/schemas/Account' },
+              security: {
+                type: :object,
+                nullable: true,
+                properties: {
+                  id: { type: :string, format: :uuid },
+                  ticker: { type: :string },
+                  name: { type: :string, nullable: true }
+                }
+              },
+              category: {
+                type: :object,
+                nullable: true,
+                properties: {
+                  id: { type: :string, format: :uuid },
+                  name: { type: :string }
+                }
+              },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' }
+            }
+          },
+          TradeCollection: {
+            type: :object,
+            required: %w[trades pagination],
+            properties: {
+              trades: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/Trade' }
+              },
+              pagination: { '$ref' => '#/components/schemas/Pagination' }
+            }
+          },
+          Holding: {
+            type: :object,
+            required: %w[id date qty price amount currency account security created_at updated_at],
+            properties: {
+              id: { type: :string, format: :uuid },
+              date: { type: :string, format: :date },
+              qty: { type: :string, description: 'Quantity of shares held' },
+              price: { type: :string, description: 'Formatted price per share' },
+              amount: { type: :string },
+              currency: { type: :string },
+              cost_basis_source: { type: :string, nullable: true },
+              account: { '$ref' => '#/components/schemas/Account' },
+              security: {
+                type: :object,
+                required: %w[id ticker name],
+                properties: {
+                  id: { type: :string, format: :uuid },
+                  ticker: { type: :string },
+                  name: { type: :string, nullable: true }
+                }
+              },
+              avg_cost: { type: :string, nullable: true },
+              created_at: { type: :string, format: :'date-time' },
+              updated_at: { type: :string, format: :'date-time' }
+            }
+          },
+          HoldingCollection: {
+            type: :object,
+            required: %w[holdings pagination],
+            properties: {
+              holdings: {
+                type: :array,
+                items: { '$ref' => '#/components/schemas/Holding' }
+              },
+              pagination: { '$ref' => '#/components/schemas/Pagination' }
+            }
+          },
+          Money: {
+            type: :object,
+            required: %w[amount currency formatted],
+            properties: {
+              amount: { type: :string, description: 'Numeric amount as string' },
+              currency: { type: :string, description: 'ISO 4217 currency code' },
+              formatted: { type: :string, description: 'Locale-formatted money string' }
+            }
+          },
+          BalanceSheet: {
+            type: :object,
+            required: %w[currency net_worth assets liabilities],
+            properties: {
+              currency: { type: :string, description: 'Family primary currency' },
+              net_worth: { '$ref' => '#/components/schemas/Money' },
+              assets: { '$ref' => '#/components/schemas/Money' },
+              liabilities: { '$ref' => '#/components/schemas/Money' }
+            }
+          },
+          SuccessMessage: {
             type: :object,
             required: %w[message],
             properties: {

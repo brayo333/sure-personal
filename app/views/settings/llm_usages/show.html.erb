@@ -1,7 +1,8 @@
+<%= content_for :page_title, "LLM Usage & Costs" %>
+
 <div class="bg-container rounded-xl shadow-border-xs p-4">
   <div class="mb-6">
-    <h1 class="text-2xl font-semibold text-primary">LLM Usage & Costs</h1>
-    <p class="text-sm text-secondary mt-1">Track your AI usage and estimated costs</p>
+    <p class="text-sm text-secondary">Track your AI usage and estimated costs</p>
   </div>
 
   <!-- Date Range Filter -->
@@ -117,7 +118,7 @@
           </thead>
           <tbody class="divide-y divide-gray-100">
             <% @llm_usages.each do |usage| %>
-              <tr class="<%= 'bg-red-50 theme-dark:bg-red-950/30' if usage.failed? %>">
+              <tr class="<%= "bg-red-50 theme-dark:bg-red-950/30" if usage.failed? %>">
                 <td class="px-4 py-3 text-sm text-primary whitespace-nowrap">
                   <%= usage.created_at.strftime("%b %d, %Y %I:%M %p") %>
                 </td>

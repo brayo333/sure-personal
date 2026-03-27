@@ -42,9 +42,12 @@ class SimplefinAccount::Investments::HoldingsProcessor
         end
 
         # Parse provider data with robust fallbacks across SimpleFin sources
+        # NOTE: "value" is intentionally excluded from the market_value fallback chain
+        # because some brokerages (e.g. Vanguard, Fidelity) use "value" to mean cost basis,
+        # which would cause the system to display average cost as current price. (GH #1182)
         qty = parse_decimal(any_of(simplefin_holding, %w[shares quantity qty units]))
-        market_value = parse_decimal(any_of(simplefin_holding, %w[market_value value current_value]))
-        cost_basis = parse_decimal(any_of(simplefin_holding, %w[cost_basis basis total_cost]))
+        market_value = parse_decimal(any_of(simplefin_holding, %w[market_value current_value]))
+        cost_basis = parse_decimal(any_of(simplefin_holding, %w[cost_basis basis total_cost value]))
 
         # Derive price from market_value when possible; otherwise fall back to any price field
         fallback_price = parse_decimal(any_of(simplefin_holding, %w[purchase_price price unit_price average_cost avg_cost]))
@@ -63,8 +66,10 @@ class SimplefinAccount::Investments::HoldingsProcessor
           0
         end
 
-        # Use best-known date: created -> updated_at -> as_of -> date -> today
-        holding_date = parse_holding_date(any_of(simplefin_holding, %w[created updated_at as_of date])) || Date.current
+        # SimpleFIN holdings represent a current snapshot, not historical positions.
+        # Always use today's date regardless of the `created` timestamp (which is when
+        # the holding was first seen by SimpleFIN, not when we observed it).
+        holding_date = Date.current
 
         # Skip zero positions with no value to avoid invisible rows
         next if qty.to_d.zero? && computed_amount.to_d.zero?

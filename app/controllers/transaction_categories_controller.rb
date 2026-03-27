@@ -2,7 +2,9 @@ class TransactionCategoriesController < ApplicationController
   include ActionView::RecordIdentifier
 
   def update
-    @entry = Current.family.entries.transactions.find(params[:transaction_id])
+    @entry = Current.accessible_entries.transactions.find(params[:transaction_id])
+    return unless require_account_permission!(@entry.account, :annotate, redirect_path: transaction_path(@entry))
+
     @entry.update!(entry_params)
 
     transaction = @entry.transaction
@@ -24,9 +26,14 @@ class TransactionCategoriesController < ApplicationController
       format.turbo_stream do
         render turbo_stream: [
           turbo_stream.replace(
-            dom_id(transaction, :category_menu),
-            partial: "categories/menu",
-            locals: { transaction: transaction }
+            dom_id(transaction, "category_menu_mobile"),
+            partial: "transactions/transaction_category",
+            locals: { transaction: transaction, variant: "mobile" }
+          ),
+          turbo_stream.replace(
+            dom_id(transaction, "category_menu_desktop"),
+            partial: "transactions/transaction_category",
+            locals: { transaction: transaction, variant: "desktop" }
           ),
           turbo_stream.replace(
             "category_name_mobile_#{transaction.id}",

@@ -54,26 +54,28 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
-        <% if Rails.env.development? %>
-          <%= icon(
-            "refresh-cw",
-            as_button: true,
-            href: sync_lunchflow_item_path(lunchflow_item)
-          ) %>
-        <% end %>
+      <% if Current.user&.admin? %>
+        <div class="flex items-center gap-2">
+          <% if Rails.env.development? %>
+            <%= icon(
+              "refresh-cw",
+              as_button: true,
+              href: sync_lunchflow_item_path(lunchflow_item)
+            ) %>
+          <% end %>
 
-        <%= render DS::Menu.new do |menu| %>
-          <% menu.with_item(
-            variant: "button",
-            text: t(".delete"),
-            icon: "trash-2",
-            href: lunchflow_item_path(lunchflow_item),
-            method: :delete,
-            confirm: CustomConfirm.for_resource_deletion(lunchflow_item.name, high_severity: true)
-          ) %>
-        <% end %>
-      </div>
+          <%= render DS::Menu.new do |menu| %>
+            <% menu.with_item(
+              variant: "button",
+              text: t(".delete"),
+              icon: "trash-2",
+              href: lunchflow_item_path(lunchflow_item),
+              method: :delete,
+              confirm: CustomConfirm.for_resource_deletion(lunchflow_item.name, high_severity: true)
+            ) %>
+          <% end %>
+        </div>
+      <% end %>
     </summary>
 
     <% unless lunchflow_item.scheduled_for_deletion? %>
@@ -81,6 +83,18 @@
         <% if lunchflow_item.accounts.any? %>
           <%= render "accounts/index/account_groups", accounts: lunchflow_item.accounts %>
         <% end %>
+
+        <%# Sync summary (collapsible) - using shared ProviderSyncSummary component %>
+        <% stats = if defined?(@lunchflow_sync_stats_map) && @lunchflow_sync_stats_map
+             @lunchflow_sync_stats_map[lunchflow_item.id] || {}
+           else
+             lunchflow_item.syncs.ordered.first&.sync_stats || {}
+           end %>
+        <%= render ProviderSyncSummary.new(
+          stats: stats,
+          provider_item: lunchflow_item,
+          institutions_count: lunchflow_item.connected_institutions.size
+        ) %>
 
         <%# Use model methods for consistent counts %>
         <% unlinked_count = lunchflow_item.unlinked_accounts_count %>

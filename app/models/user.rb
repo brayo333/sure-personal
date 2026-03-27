@@ -1,10 +1,30 @@
 class User < ApplicationRecord
+  include Encryptable
+
   # Allow nil password for SSO-only users (JIT provisioning).
   # Custom validation ensures password is present for non-SSO registration.
   has_secure_password validations: false
 
+  # Encrypt sensitive fields if ActiveRecord encryption is configured
+  if encryption_ready?
+    # MFA secrets
+    encrypts :otp_secret, deterministic: true
+    # Note: otp_backup_codes is a PostgreSQL array column which doesn't support
+    # AR encryption. To encrypt it, a migration would be needed to change the
+    # column type from array to text/jsonb.
+
+    # PII - emails (deterministic for lookups, downcase for case-insensitive)
+    encrypts :email, deterministic: true, downcase: true
+    encrypts :unconfirmed_email, deterministic: true, downcase: true
+
+    # PII - names (non-deterministic for maximum security)
+    encrypts :first_name
+    encrypts :last_name
+  end
+
   belongs_to :family
   belongs_to :last_viewed_chat, class_name: "Chat", optional: true
+  belongs_to :default_account, class_name: "Account", optional: true
   has_many :sessions, dependent: :destroy
   has_many :chats, dependent: :destroy
   has_many :api_keys, dependent: :destroy
@@ -13,12 +33,17 @@ class User < ApplicationRecord
   has_many :impersonator_support_sessions, class_name: "ImpersonationSession", foreign_key: :impersonator_id, dependent: :destroy
   has_many :impersonated_support_sessions, class_name: "ImpersonationSession", foreign_key: :impersonated_id, dependent: :destroy
   has_many :oidc_identities, dependent: :destroy
+  has_many :sso_audit_logs, dependent: :nullify
+  has_many :owned_accounts, class_name: "Account", foreign_key: :owner_id
+  has_many :account_shares, dependent: :destroy
+  has_many :shared_accounts, through: :account_shares, source: :account
   accepts_nested_attributes_for :family, update_only: true
 
   validates :email, presence: true, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }
   validate :ensure_valid_profile_image
   validates :default_period, inclusion: { in: Period::PERIODS.keys }
   validates :default_account_order, inclusion: { in: AccountOrder::ORDERS.keys }
+  validates :locale, inclusion: { in: I18n.available_locales.map(&:to_s) }, allow_nil: true
 
   # Password is required on create unless the user is being created via SSO JIT.
   # SSO JIT users have password_digest = nil and authenticate via OIDC only.
@@ -29,9 +54,20 @@ class User < ApplicationRecord
 
   normalizes :first_name, :last_name, with: ->(value) { value.strip.presence }
 
-  enum :role, { member: "member", admin: "admin", super_admin: "super_admin" }, validate: true
+  enum :role, { guest: "guest", member: "member", admin: "admin", super_admin: "super_admin" }, validate: true
+  enum :ui_layout, { dashboard: "dashboard", intro: "intro" }, validate: true, prefix: true
 
-  has_one_attached :profile_image do |attachable|
+  before_validation :apply_ui_layout_defaults
+  before_validation :apply_role_based_ui_defaults
+
+  # Returns the appropriate role for a new user creating a family.
+  # The very first user of an instance becomes super_admin; subsequent users
+  # get the specified fallback role (typically :admin for family creators).
+  def self.role_for_new_family_creator(fallback_role: :admin)
+    User.exists? ? fallback_role : :super_admin
+  end
+
+  has_one_attached :profile_image, dependent: :purge_later do |attachable|
     attachable.variant :thumbnail, resize_to_fill: [ 300, 300 ], convert: :webp, saver: { quality: 80 }
     attachable.variant :small, resize_to_fill: [ 72, 72 ], convert: :webp, saver: { quality: 80 }, preprocessed: true
   end
@@ -83,6 +119,14 @@ class User < ApplicationRecord
     super_admin? || role == "admin"
   end
 
+  def accessible_accounts
+    family.accounts.accessible_by(self)
+  end
+
+  def finance_accounts
+    family.accounts.included_in_finances_for(self)
+  end
+
   def display_name
     [ first_name, last_name ].compact.join(" ").presence || email
   end
@@ -104,11 +148,25 @@ class User < ApplicationRecord
   end
 
   def ai_available?
-    !Rails.application.config.app_mode.self_hosted? || ENV["OPENAI_ACCESS_TOKEN"].present? || Setting.openai_access_token.present?
+    return true unless Rails.application.config.app_mode.self_hosted?
+
+    effective_type = ENV["ASSISTANT_TYPE"].presence || family&.assistant_type.presence || "builtin"
+
+    case effective_type
+    when "external"
+      Assistant::External.available_for?(self)
+    else
+      ENV["OPENAI_ACCESS_TOKEN"].present? || Setting.openai_access_token.present?
+    end
   end
 
   def ai_enabled?
     ai_enabled && ai_available?
+  end
+
+  def self.default_ui_layout
+    layout = Rails.application.config.x.ui&.default_layout || "dashboard"
+    layout.in?(%w[intro dashboard]) ? layout : "dashboard"
   end
 
   # SSO-only users have OIDC identities but no local password.
@@ -147,6 +205,7 @@ class User < ApplicationRecord
     if last_user_in_family?
       family.destroy
     else
+      reassign_owned_accounts!
       destroy
     end
   end
@@ -196,6 +255,15 @@ class User < ApplicationRecord
 
   def account_order
     AccountOrder.find(default_account_order) || AccountOrder.default
+  end
+
+  def default_account_for_transactions
+    return nil unless default_account_id.present?
+
+    account = default_account
+    return nil unless account&.eligible_for_transaction_default? && account.family_id == family_id
+
+    account
   end
 
   # Dashboard preferences management
@@ -260,6 +328,14 @@ class User < ApplicationRecord
     preferences&.dig("transactions_collapsed_sections", section_key) == true
   end
 
+  def show_split_grouped?
+    preferences&.dig("show_split_grouped") != false
+  end
+
+  def dashboard_two_column?
+    preferences&.dig("dashboard_two_column") != false
+  end
+
   def update_transactions_preferences(prefs)
     transaction do
       lock!
@@ -279,6 +355,39 @@ class User < ApplicationRecord
   end
 
   private
+    def apply_ui_layout_defaults
+      self.ui_layout = (ui_layout.presence || self.class.default_ui_layout)
+    end
+
+    def apply_role_based_ui_defaults
+      if ui_layout_intro?
+        if guest?
+          self.show_sidebar = false
+          self.show_ai_sidebar = false
+          self.ai_enabled = true
+        else
+          self.ui_layout = "dashboard"
+        end
+      elsif guest?
+        self.ui_layout = "intro"
+        self.show_sidebar = false
+        self.show_ai_sidebar = false
+        self.ai_enabled = true
+      end
+
+      if leaving_guest_role?
+        self.show_sidebar = true unless show_sidebar
+        self.show_ai_sidebar = true unless show_ai_sidebar
+      end
+    end
+
+    def leaving_guest_role?
+      return false unless will_save_change_to_role?
+
+      previous_role, new_role = role_change_to_be_saved
+      previous_role == "guest" && new_role != "guest"
+    end
+
     def skip_password_validation?
       skip_password_validation == true
     end
@@ -303,6 +412,22 @@ class User < ApplicationRecord
       family.users.count == 1
     end
 
+    def reassign_owned_accounts!
+      account_ids = owned_accounts.pluck(:id)
+      return if account_ids.empty?
+
+      new_owner = family.users.where.not(id: id)
+                        .find_by(role: %w[admin super_admin]) ||
+                  family.users.where.not(id: id)
+                        .order(:created_at).first
+
+      return unless new_owner
+
+      Account.where(id: account_ids).update_all(owner_id: new_owner.id)
+      # Remove shares the new owner had for these accounts (they now own them)
+      AccountShare.where(account_id: account_ids, user_id: new_owner.id).delete_all
+    end
+
     def deactivated_email
       email.gsub(/@/, "-deactivated-#{SecureRandom.uuid}@")
     end
@@ -324,7 +449,7 @@ class User < ApplicationRecord
       if (index = otp_backup_codes.index(code))
         remaining_codes = otp_backup_codes.dup
         remaining_codes.delete_at(index)
-        update_column(:otp_backup_codes, remaining_codes)
+        update!(otp_backup_codes: remaining_codes)
         true
       else
         false

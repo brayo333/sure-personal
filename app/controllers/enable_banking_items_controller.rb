@@ -1,6 +1,7 @@
 class EnableBankingItemsController < ApplicationController
   include EnableBankingItems::MapsHelper
   before_action :set_enable_banking_item, only: [ :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
+  before_action :require_admin!, only: [ :new, :create, :link_accounts, :select_existing_account, :link_existing_account, :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
   skip_before_action :verify_authenticity_token, only: [ :callback ]
 
   def new
@@ -150,7 +151,7 @@ class EnableBankingItemsController < ApplicationController
       safe_redirect_to_enable_banking(
         redirect_url,
         fallback_path: settings_providers_path,
-        fallback_alert: t(".invalid_redirect", default: "Invalid authorization URL received. Please try again or contact support.")
+        fallback_alert: t(".invalid_redirect", default: "Invalid authorization URL received. Please try again.")
       )
     rescue Provider::EnableBanking::EnableBankingError => e
       if e.message.include?("REDIRECT_URI_NOT_ALLOWED")
@@ -227,7 +228,7 @@ class EnableBankingItemsController < ApplicationController
       safe_redirect_to_enable_banking(
         redirect_url,
         fallback_path: settings_providers_path,
-        fallback_alert: t(".invalid_redirect", default: "Invalid authorization URL received. Please try again or contact support.")
+        fallback_alert: t(".invalid_redirect", default: "Invalid authorization URL received. Please try again.")
       )
     rescue Provider::EnableBanking::EnableBankingError => e
       Rails.logger.error "Enable Banking reauthorization error: #{e.message}"
@@ -540,13 +541,8 @@ class EnableBankingItemsController < ApplicationController
       )
     end
 
-    # Generate the callback URL for Enable Banking OAuth
-    # In production, uses the standard Rails route
-    # In development, uses DEV_WEBHOOKS_URL if set (e.g., ngrok URL)
     def enable_banking_callback_url
-      return callback_enable_banking_items_url if Rails.env.production?
-
-      ENV.fetch("DEV_WEBHOOKS_URL", root_url.chomp("/")) + "/enable_banking_items/callback"
+      helpers.enable_banking_callback_url
     end
 
     # Validate redirect URLs from Enable Banking API to prevent open redirect attacks

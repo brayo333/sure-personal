@@ -31,6 +31,7 @@ gem "lookbook", "2.3.11"
 gem "hotwire_combobox"
 
 # Background Jobs
+gem "connection_pool", "~> 2.5" # pin to 2.x; 3.0 breaks sidekiq 8.x
 gem "sidekiq"
 gem "sidekiq-cron"
 gem "sidekiq-unique-jobs"
@@ -53,12 +54,15 @@ gem "image_processing", ">= 1.2"
 gem "ostruct"
 gem "bcrypt", "~> 3.1"
 gem "jwt"
+gem "ed25519" # For Coinbase CDP API authentication
 gem "jbuilder"
 gem "countries"
 
 # OAuth & API Security
 gem "doorkeeper"
 gem "rack-attack", "~> 6.6"
+gem "rack-cors"
+gem "pundit"
 gem "faraday"
 gem "faraday-retry"
 gem "faraday-multipart"
@@ -68,21 +72,25 @@ gem "pagy"
 gem "rails-settings-cached"
 gem "tzinfo-data", platforms: %i[windows jruby]
 gem "csv"
+gem "rchardet" # Character encoding detection
 gem "redcarpet"
 gem "stripe"
 gem "plaid"
+gem "snaptrade", "~> 2.0"
 gem "httparty"
 gem "rotp", "~> 6.3"
 gem "rqrcode", "~> 3.0"
 gem "activerecord-import"
 gem "rubyzip", "~> 2.3"
+gem "pdf-reader", "~> 2.12"
 
-# OpenID Connect & OAuth authentication
+# OpenID Connect, OAuth & SAML authentication
 gem "omniauth", "~> 2.1"
 gem "omniauth-rails_csrf_protection"
 gem "omniauth_openid_connect"
 gem "omniauth-google-oauth2"
 gem "omniauth-github"
+gem "omniauth-saml", "~> 2.1"
 
 # State machines
 gem "aasm"
@@ -117,6 +125,13 @@ group :development do
   gem "foreman"
 end
 
+group :development, :test do
+  gem "rspec-rails"
+  gem "rswag-api"
+  gem "rswag-specs"
+  gem "rswag-ui"
+end
+
 group :test do
   gem "capybara"
   gem "selenium-webdriver"
@@ -125,8 +140,4 @@ group :test do
   gem "webmock"
   gem "climate_control"
   gem "simplecov", require: false
-  gem "rspec-rails"
-  gem "rswag-api"
-  gem "rswag-specs"
-  gem "rswag-ui"
 end

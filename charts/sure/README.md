@@ -12,6 +12,7 @@ Official Helm chart for deploying the Sure Rails application on Kubernetes. It s
 - Optional subcharts
   - CloudNativePG (operator) + Cluster CR for PostgreSQL with HA support
   - OT-CONTAINER-KIT redis-operator for Redis HA (replication by default, optional Sentinel)
+- Optional Pipelock AI agent security proxy (forward proxy + MCP reverse proxy with DLP, prompt injection, and tool poisoning detection)
 - Security best practices: runAsNonRoot, readOnlyRootFilesystem, optional existingSecret, no hardcoded secrets
 - Scalability
   - Replicas (web/worker), resources, topology spread constraints
@@ -246,7 +247,11 @@ redisOperator:
         cpu: 100m
         memory: 256Mi
   managed:
-    enabled: true            # render a RedisSentinel CR
+    enabled: true            # render Redis CRs for in-cluster Redis
+  mode: sentinel             # enables RedisSentinel CR in addition to RedisReplication
+  sentinel:
+    enabled: true            # must be true when mode=sentinel
+    masterGroupName: mymaster
   name: ""                   # defaults to <fullname>-redis
   replicas: 3
   auth:
@@ -258,9 +263,14 @@ redisOperator:
 ```
 
 Notes:
+- When `redisOperator.mode=sentinel` and `redisOperator.sentinel.enabled=true`, the chart automatically configures Sidekiq to use Redis Sentinel for high availability.
+- The application receives `REDIS_SENTINEL_HOSTS` (comma-separated list of Sentinel endpoints) and `REDIS_SENTINEL_MASTER` (master group name) environment variables instead of `REDIS_URL`.
+- Sidekiq will connect to Sentinel nodes for automatic master discovery and failover support.
+- Both the Redis master and Sentinel nodes use the same password from `REDIS_PASSWORD` (via `redisOperator.auth.existingSecret`).
+- Sentinel authentication uses username "default" by default (configurable via `REDIS_SENTINEL_USERNAME`).
 - The operator master service is `<name>-redis-master.<ns>.svc.cluster.local:6379`.
 - The CR references your existing password secret via `kubernetesConfig.redisSecret { name, key }`.
-- Provider precedence for auto-wiring is: explicit `rails.extraEnv.REDIS_URL` → `redisOperator.managed` → `redisSimple`.
+- Provider precedence for auto-wiring is: explicit `rails.extraEnv.REDIS_URL` → `redisOperator.managed` (with Sentinel if configured) → `redisSimple`.
 - Only one in-cluster Redis provider should be enabled at a time to avoid ambiguity.
 
 ### HA scheduling and topology spreading
@@ -300,6 +310,74 @@ Security note on label selectors:
 - Choose selectors that uniquely match the intended pods to avoid cross-app interference. Good candidates are:
   - CNPG: `cnpg.io/cluster: <cluster-name>` (CNPG labels its pods)
   - RedisReplication: `app.kubernetes.io/instance: <release-name>` or `app.kubernetes.io/name: <cr-name>`
+
+#### Rolling update strategy
+
+When using topology spread constraints with `whenUnsatisfiable: DoNotSchedule`, you must configure the Kubernetes rolling update strategy to prevent deployment deadlocks.
+
+The chart now makes the rolling update strategy configurable for web and worker deployments. The defaults have been changed from Kubernetes defaults (`maxUnavailable=0`, `maxSurge=25%`) to:
+
+```yaml
+web:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+
+worker:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+```
+
+**Why these defaults?**
+
+With `maxSurge=0`, Kubernetes will terminate an old pod before creating a new one. This ensures that when all nodes are occupied (due to strict topology spreading), there is always space for the new pod to be scheduled.
+
+If you use `maxSurge > 0` with `DoNotSchedule` topology constraints and all nodes are occupied, Kubernetes cannot create the new pod (no space available) and cannot terminate the old pod (new pod must be ready first), resulting in a deployment deadlock.
+
+**Configuration examples:**
+
+For faster rollouts when not using strict topology constraints:
+
+```yaml
+web:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+worker:
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+```
+
+For HA setups with topology spreading:
+
+```yaml
+web:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: sure
+          app.kubernetes.io/component: web
+```
+
+**Warning:** Using `maxSurge > 0` with `whenUnsatisfiable: DoNotSchedule` can cause deployment deadlocks when all nodes are occupied. If you need faster rollouts, either:
+- Use `whenUnsatisfiable: ScheduleAnyway` instead of `DoNotSchedule`
+- Ensure you have spare capacity on your nodes
+- Keep `maxSurge: 0` and accept slower rollouts
 
 Compatibility:
 - CloudNativePG v1.27.1 supports `minSyncReplicas`/`maxSyncReplicas` and standard k8s scheduling fields under `spec`.
@@ -361,13 +439,13 @@ stringData:
   # password: "__SET_SECRET__"
 ```
 
-Note: These are non-sensitive placeholder values. Do not commit real secrets to version control. Prefer External Secrets, Sealed Secrets, or your platform’s secret manager to source these at runtime.
+Note: These are non-sensitive placeholder values. Do not commit real secrets to version control. Prefer External Secrets, Sealed Secrets, or your platform's secret manager to source these at runtime.
 
 ### Linting Helm templates and YAML
 
 Helm template files under `charts/**/templates/**` contain template delimiters like `{{- ... }}` that raw YAML linters will flag as invalid. To avoid false positives in CI:
 
-- Use Helm’s linter for charts:
+- Use Helm's linter for charts:
   - `helm lint charts/sure`
 - Configure your YAML linter (e.g., yamllint) to ignore Helm template directories (exclude `charts/**/templates/**`), or use a Helm-aware plugin that preprocesses templates before linting.
 
@@ -456,9 +534,9 @@ ingress:
       secretName: finance-tls
 ```
 
-## Boot-required secrets (self-hosted)
+## Boot-required secrets
 
-In self-hosted mode the Rails initializer for Active Record Encryption loads on boot. To prevent boot crashes, ensure the following environment variables are present for ALL workloads (web, worker, migrate job/initContainer, CronJobs, and the SimpleFin backfill job):
+The Rails initializer for Active Record Encryption loads on boot. To prevent boot crashes, ensure the following environment variables are present for ALL workloads (web, worker, migrate job/initContainer, CronJobs, and the SimpleFin backfill job):
 
 - `SECRET_KEY_BASE`
 - `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY`
@@ -475,7 +553,7 @@ rails:
     enabled: true  # set to false to skip injecting the three AR encryption env vars
 ```
 
-Note: Even if `simplefin.encryption.enabled=false`, the app initializer expects these env vars to exist in self-hosted mode.
+Note: In self-hosted mode, if these env vars are not provided, they will be automatically generated from `SECRET_KEY_BASE`. In managed mode, these env vars must be explicitly provided via environment variables or Rails credentials.
 
 ## Advanced environment variable injection
 
@@ -560,6 +638,156 @@ hpa:
     targetCPUUtilizationPercentage: 70
 ```
 
+## Pipelock (AI agent security proxy)
+
+[Pipelock](https://github.com/luckyPipewrench/pipelock) is an optional security proxy that scans AI agent traffic for secret exfiltration, prompt injection, tool poisoning, and SSRF. It runs as a separate Deployment with two listeners:
+
+- **Forward proxy** (port 8888): Scans outbound HTTPS from Faraday-based AI clients. Auto-injected via `HTTPS_PROXY` env vars when enabled.
+- **MCP reverse proxy** (port 8889): Scans inbound MCP traffic from external AI assistants.
+
+v2.0 adds enhanced tool poisoning detection (full JSON schema scanning), per-read kill switch preemption on long-lived connections, trusted domain allowlisting, and MCP tool redirect profiles. Process sandboxing and attack simulation are also available via `extraConfig` and CLI.
+
+### Enabling Pipelock
+
+```yaml
+pipelock:
+  enabled: true
+  image:
+    tag: "2.0.0"
+  mode: balanced   # strict, balanced, or audit
+```
+
+### Trusted domains
+
+In Kubernetes, services often have public DNS records that resolve to private IPs. Without `trustedDomains`, the SSRF scanner blocks this legitimate traffic. Add trusted domains to allow them through:
+
+```yaml
+pipelock:
+  trustedDomains:
+    - "api.internal.example.com"
+    - "*.corp.example.com"
+```
+
+### MCP tool redirect profiles
+
+Redirect profiles route matched MCP tool calls to an audited handler program instead of blocking. The handler returns a synthetic MCP response, keeping the agent's flow intact while enforcing policy:
+
+```yaml
+pipelock:
+  mcpToolPolicy:
+    enabled: true
+    action: redirect      # or use per-rule action overrides
+    redirectProfiles:
+      safe-fetch:
+        exec: ["/pipelock", "internal-redirect", "fetch-proxy"]
+        reason: "Route fetch calls through audited proxy"
+```
+
+### Validating your config
+
+Pipelock v2.0 includes two CLI tools for config validation:
+
+```bash
+# Run 24 synthetic attack scenarios against your config
+pipelock simulate --config pipelock.yaml
+
+# Score your config's security posture (0-100)
+pipelock audit score --config pipelock.yaml
+```
+
+### Exposing MCP to external AI assistants
+
+When running in Kubernetes, external AI agents need network access to the MCP reverse proxy port. Enable the Pipelock Ingress:
+
+```yaml
+pipelock:
+  enabled: true
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt
+    hosts:
+      - host: pipelock.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts: [pipelock.example.com]
+        secretName: pipelock-tls
+```
+
+Security: The Ingress routes to port `mcp` (8889). Ensure `MCP_API_TOKEN` is set so the MCP endpoint requires authentication. The Ingress itself does not add auth.
+
+### Metrics (Prometheus)
+
+Pipelock exposes `/metrics` on the forward proxy port. Enable scraping with a ServiceMonitor:
+
+```yaml
+pipelock:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    portName: proxy   # matches Service port name for 8888
+    additionalLabels:
+      release: prometheus   # match your Prometheus Operator selector
+```
+
+### PodDisruptionBudget
+
+Protect Pipelock from node drains:
+
+```yaml
+pipelock:
+  pdb:
+    enabled: true
+    maxUnavailable: 1   # safe for single-replica; use minAvailable when replicas > 1
+```
+
+Note: Setting `minAvailable` with `replicas=1` blocks eviction entirely. Use `maxUnavailable` for single-replica deployments.
+
+### Structured logging
+
+```yaml
+pipelock:
+  logging:
+    format: json        # json or text
+    output: stdout
+    includeAllowed: false
+    includeBlocked: true
+```
+
+### Extra config (escape hatch)
+
+For Pipelock config sections not covered by structured values (session profiling, data budgets, kill switch, sandbox, reverse proxy, adaptive enforcement, etc.), use `extraConfig`:
+
+```yaml
+pipelock:
+  extraConfig:
+    session_profiling:
+      enabled: true
+      max_sessions: 1000
+    adaptive_enforcement:
+      enabled: true
+      exempt_domains:
+        - "*.example.com"
+    kill_switch:
+      api_listen: ":9090"    # dedicated port for kill switch API
+```
+
+These are appended verbatim to `pipelock.yaml`. Do not duplicate keys already rendered by the chart.
+
+### Requiring Pipelock for external assistants
+
+To enforce that Pipelock is enabled whenever the external AI assistant feature is active:
+
+```yaml
+pipelock:
+  requireForExternalAssistant: true
+```
+
+This causes `helm template` / `helm install` to fail if `rails.externalAssistant.enabled=true` and `pipelock.enabled=false`. Note: this only guards the `externalAssistant` path. Direct MCP access via `MCP_API_TOKEN` is configured through env vars and not detectable from Helm values.
+
 ## Security Notes
 
 - Never commit secrets in `values.yaml`. Use `rails.existingSecret` or a tool like Sealed Secrets.
@@ -579,10 +807,11 @@ See `values.yaml` for the complete configuration surface, including:
 - `redis-ha.*`: enable dandydev/redis-ha subchart and configure replicas/auth (Sentinel/HA); supports `existingSecret` and `existingSecretPasswordKey`
 - `redisOperator.*`: optionally install OT redis-operator (`redisOperator.enabled`) and/or render a `RedisSentinel` CR (`redisOperator.managed.enabled`); configure `name`, `replicas`, `auth.existingSecret/passwordKey`, `persistence.className/size`, scheduling knobs, and `operator.resources` (controller) / `workloadResources` (Redis pods)
 - `redisSimple.*`: optional single‑pod Redis (non‑HA) when `redis-ha.enabled=false`
-- `web.*`, `worker.*`: replicas, probes, resources, scheduling
+- `web.*`, `worker.*`: replicas, probes, resources, scheduling, **strategy** (rolling update configuration)
 - `migrations.*`: strategy job or initContainer
 - `simplefin.encryption.*`: enable + backfill options
 - `cronjobs.*`: custom CronJobs
+- `pipelock.*`: AI agent security proxy (forward proxy, MCP reverse proxy, DLP, injection scanning, trusted domains, tool redirect profiles, logging, serviceMonitor, ingress, PDB, extraConfig)
 - `service.*`, `ingress.*`, `serviceMonitor.*`, `hpa.*`
 
 ## Helm tests
@@ -626,7 +855,7 @@ helm uninstall sure -n sure
 
 ## Cleanup & reset (k3s)
 
-For local k3s experimentation it’s sometimes useful to completely reset the `sure` namespace, especially if CR finalizers or PVCs get stuck.
+For local k3s experimentation it's sometimes useful to completely reset the `sure` namespace, especially if CR finalizers or PVCs get stuck.
 
 The script below is a **last-resort tool** for cleaning the namespace. It:
 

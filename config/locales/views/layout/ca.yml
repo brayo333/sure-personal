@@ -2,6 +2,7 @@
 ca:
   layouts:
     application:
+      privacy_mode: Alternar mode de privadesa
       nav:
         assistant: Assistent
         budgets: Pressupostos
@@ -17,3 +18,7 @@ ca:
       footer:
         privacy_policy: Política de privacitat
         terms_of_service: Termes del servei
+    trial:
+      open_demo: Demo oberta
+      data_deleted_in_days: Les dades s'eliminaran en %{days} dies
+      contribute: Contribuir

@@ -28,6 +28,8 @@ class TradesTest < ApplicationSystemTestCase
 
     click_button "Add transaction"
 
+    assert_text "Entry created"
+
     visit_trades
 
     within_trades do
@@ -49,6 +51,8 @@ class TradesTest < ApplicationSystemTestCase
 
     click_button "Add transaction"
 
+    assert_text "Entry created"
+
     visit_trades
 
     within_trades do
@@ -58,7 +62,7 @@ class TradesTest < ApplicationSystemTestCase
 
   private
     def open_new_trade_modal
-      click_on "New transaction"
+      click_on "New activity"
     end
 
     def within_trades(&block)
